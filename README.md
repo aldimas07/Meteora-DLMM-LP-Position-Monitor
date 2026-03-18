@@ -19,7 +19,7 @@ Telegram bot untuk memonitor posisi Meteora DLMM Liquidity Provider secara otoma
 ### 1. Clone & Install
 
 ```bash
-git clone <repo>
+git clone https://github.com/aldimas07/Meteora-DLMM-LP-Position-Monitor.git
 cd meteora-lp-monitor
 npm install
 ```
