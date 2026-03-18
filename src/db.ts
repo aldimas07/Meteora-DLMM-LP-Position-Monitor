@@ -176,6 +176,10 @@ export function deletePositionsByWallet(walletAddress: string): void {
   db.prepare(`DELETE FROM positions WHERE wallet_address = ?`).run(walletAddress);
 }
 
+export function deletePosition(positionAddress: string): void {
+  db.prepare(`DELETE FROM positions WHERE position_address = ?`).run(positionAddress);
+}
+
 export function getKnownPositionAddresses(walletAddress: string): Set<string> {
   const rows = db.prepare(
     `SELECT position_address FROM positions WHERE wallet_address = ?`

@@ -4,6 +4,7 @@ import {
   listWallets,
   getPosition,
   upsertPosition,
+  deletePosition,
   getKnownPositionAddresses,
   getProximityThreshold,
   getChatId,
@@ -158,7 +159,13 @@ async function processWallet(
     await delay(100);
   }
 
-  void knownAddresses;
+  // Delete positions that are no longer returned by the API
+  for (const addr of knownAddresses) {
+    if (!seenAddresses.has(addr)) {
+      deletePosition(addr);
+      console.log(`[monitor] Removed closed position: ${addr}`);
+    }
+  }
 }
 
 // ─── Main Poll Cycle ──────────────────────────────────────────────────────────
