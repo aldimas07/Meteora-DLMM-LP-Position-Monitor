@@ -54,19 +54,55 @@ interface DatapiPool {
   tokenY: string;
   tokenXMint: string;
   tokenYMint: string;
+  binStep: number;
 }
 
 interface DatapiPortfolioResponse {
   pools?: DatapiPool[];
-  listPositions?: string[]; // optionally present directly
+}
+
+// ─── Strategy Detection ───────────────────────────────────────────────────────
+
+/**
+ * Infer strategy type from the liquidity distribution shape.
+ * On-chain positions don't store strategy type — we approximate by
+ * analyzing per-bin liquidity distribution.
+ */
+function inferStrategyType(positionBinData: Array<{ positionLiquidity: string; binId: number }>): string {
+  if (!positionBinData || positionBinData.length === 0) return 'Unknown';
+  if (positionBinData.length === 1) return 'Spot';
+
+  const liquidities = positionBinData.map(b => parseFloat(b.positionLiquidity || '0'));
+  const maxLiq = Math.max(...liquidities);
+  if (maxLiq === 0) return 'Unknown';
+
+  const normalized = liquidities.map(l => l / maxLiq);
+
+  // Check if relatively uniform → Spot
+  const avg = normalized.reduce((a, b) => a + b, 0) / normalized.length;
+  const variance = normalized.reduce((a, b) => a + (b - avg) ** 2, 0) / normalized.length;
+  if (variance < 0.05) return 'Spot';
+
+  // Check if peaked in the middle → Curve
+  const midIndex = Math.floor(normalized.length / 2);
+  const midValue = normalized[midIndex];
+  const edgeAvg = (normalized[0] + normalized[normalized.length - 1]) / 2;
+  if (midValue > edgeAvg * 1.5 && variance > 0.05) return 'Curve';
+
+  // Check if one-sided concentration → BidAsk
+  const firstHalf = normalized.slice(0, midIndex).reduce((a, b) => a + b, 0);
+  const secondHalf = normalized.slice(midIndex).reduce((a, b) => a + b, 0);
+  const sideRatio = Math.min(firstHalf, secondHalf) / Math.max(firstHalf, secondHalf);
+  if (sideRatio < 0.3) return 'BidAsk';
+
+  return 'Spot';
 }
 
 // ─── API Client ───────────────────────────────────────────────────────────────
 
 /**
  * Fetch all open DLMM positions for a given wallet address.
- * It first hits the REST API to discover which pools the user is in.
- * Then it uses the DLMM SDK to fetch the exact position limits & active bin.
+ * Uses REST API to discover pools, then the DLMM SDK for accurate position data.
  */
 export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPosition[]> {
   const http = getMeteoraClient();
@@ -80,8 +116,6 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
       `${DATAPI_URL}/portfolio/open`,
       { params: { user: walletAddress } }
     );
-    
-    // The datapi returns { page, pageSize, hasNext, totalCount, pools: [...] }
     if (response.data && Array.isArray(response.data.pools)) {
       pools = response.data.pools;
     }
@@ -96,34 +130,36 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
 
   for (const p of pools) {
     try {
-      // Small delay to treat rate limits nice
       await delay(100);
 
       const poolPubkey = new PublicKey(p.poolAddress);
-      
-      // Load pool state via SDK to get activeBin
       const dlmm = await DLMM.create(conn, poolPubkey, { cluster: 'mainnet-beta' });
       const activeBin = await dlmm.getActiveBin();
       const activeId = activeBin.binId;
-      
-      // Load positions for this exact pool for the user
+
+      // Get accurate decimals from the token mints
+      const decimalsX = dlmm.tokenX.mint.decimals;
+      const decimalsY = dlmm.tokenY.mint.decimals;
+      const binStep = dlmm.lbPair.binStep;
+
       const { userPositions } = await dlmm.getPositionsByUserAndLbPair(userPubkey);
 
       for (const pos of userPositions) {
         const lowerBinId = pos.positionData.lowerBinId;
         const upperBinId = pos.positionData.upperBinId;
-        
-        // Fee data from SDK is in BN. We approximate with 9 and 6 decimals
-        // For accurate tracking, production bots would fetch mint info on-chain.
-        const decimalsX = 9; // Common Solana default for base tokens
-        const decimalsY = 6; // Common for stablecoins (USDC/USDT)
-        
-        // We use pure numbers for simplicity here
+
+        // Unclaimed fees (BN → human-readable)
         const feeXRaw = parseFloat(pos.positionData.feeX.toString());
         const feeYRaw = parseFloat(pos.positionData.feeY.toString());
-        
         const totalFeeX = feeXRaw / Math.pow(10, decimalsX);
         const totalFeeY = feeYRaw / Math.pow(10, decimalsY);
+
+        // Current position value
+        const totalXAmount = parseFloat(pos.positionData.totalXAmount) / Math.pow(10, decimalsX);
+        const totalYAmount = parseFloat(pos.positionData.totalYAmount) / Math.pow(10, decimalsY);
+
+        // Infer strategy type from bin distribution
+        const strategyType = inferStrategyType(pos.positionData.positionBinData);
 
         results.push({
           positionAddress: pos.publicKey.toBase58(),
@@ -131,21 +167,17 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
           upperBinId,
           totalUnclaimedFeeX: totalFeeX,
           totalUnclaimedFeeY: totalFeeY,
+          totalXAmount,
+          totalYAmount,
+          strategyType,
           pool: {
             address: p.poolAddress,
             name: `${p.tokenX}-${p.tokenY}`,
             activeId,
-            tokenX: {
-              address: p.tokenXMint,
-              symbol: p.tokenX,
-              decimals: decimalsX
-            },
-            tokenY: {
-              address: p.tokenYMint,
-              symbol: p.tokenY,
-              decimals: decimalsY
-            }
-          }
+            binStep,
+            tokenX: { address: p.tokenXMint, symbol: p.tokenX, decimals: decimalsX },
+            tokenY: { address: p.tokenYMint, symbol: p.tokenY, decimals: decimalsY },
+          },
         });
       }
     } catch (e) {
@@ -159,4 +191,10 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
 /** Format a Meteora app URL for a given position */
 export function getPositionUrl(positionAddress: string): string {
   return `https://app.meteora.ag/dlmm?position=${positionAddress}`;
+}
+
+/** Convert a bin ID to a human-readable price using binStep */
+export function binIdToPrice(binId: number, binStep: number, decimalsX: number, decimalsY: number): number {
+  const pricePerLamport = Math.pow(1 + binStep / 10000, binId);
+  return pricePerLamport * Math.pow(10, decimalsX - decimalsY);
 }

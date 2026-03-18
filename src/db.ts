@@ -12,6 +12,7 @@ export function initDb(dbPath?: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   createTables();
+  migrateSchema();
   return db;
 }
 
@@ -36,11 +37,15 @@ function createTables(): void {
       lower_bin_id            INTEGER NOT NULL,
       upper_bin_id            INTEGER NOT NULL,
       last_known_active_bin   INTEGER NOT NULL,
+      bin_step                INTEGER NOT NULL DEFAULT 0,
       is_in_range             INTEGER NOT NULL DEFAULT 1,
       oor_alert_sent          INTEGER NOT NULL DEFAULT 0,
       approaching_alert_sent  INTEGER NOT NULL DEFAULT 0,
       unclaimed_fee_x         REAL    NOT NULL DEFAULT 0,
       unclaimed_fee_y         REAL    NOT NULL DEFAULT 0,
+      total_x_amount          REAL    NOT NULL DEFAULT 0,
+      total_y_amount          REAL    NOT NULL DEFAULT 0,
+      strategy_type           TEXT    NOT NULL DEFAULT 'Unknown',
       updated_at              INTEGER NOT NULL
     );
 
@@ -50,11 +55,30 @@ function createTables(): void {
     );
   `);
 
-  // Seed defaults if not present
   const insert = db.prepare(
     `INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`
   );
   insert.run('proximity_threshold', '5');
+}
+
+/** Add new columns to existing DB: safe migration via ALTER TABLE IF NOT EXISTS */
+function migrateSchema(): void {
+  const cols = db.pragma('table_info(positions)') as Array<{ name: string }>;
+  const colNames = new Set(cols.map(c => c.name));
+
+  const migrations: Array<[string, string]> = [
+    ['bin_step', 'INTEGER NOT NULL DEFAULT 0'],
+    ['total_x_amount', 'REAL NOT NULL DEFAULT 0'],
+    ['total_y_amount', 'REAL NOT NULL DEFAULT 0'],
+    ['strategy_type', "TEXT NOT NULL DEFAULT 'Unknown'"],
+  ];
+
+  for (const [col, def] of migrations) {
+    if (!colNames.has(col)) {
+      db.exec(`ALTER TABLE positions ADD COLUMN ${col} ${def}`);
+      console.log(`[db] Migrated: added column '${col}' to positions table`);
+    }
+  }
 }
 
 // ─── Wallet Operations ────────────────────────────────────────────────────────
@@ -66,7 +90,7 @@ export function addWallet(address: string): boolean {
     ).run(address, Date.now());
     return true;
   } catch {
-    return false; // UNIQUE constraint = already exists
+    return false;
   }
 }
 
@@ -95,15 +119,17 @@ export function upsertPosition(pos: Omit<PositionRow, 'id'>): void {
     INSERT INTO positions (
       wallet_address, position_address, pool_address, pool_name,
       token_x_symbol, token_y_symbol, token_x_decimals, token_y_decimals,
-      lower_bin_id, upper_bin_id, last_known_active_bin,
+      lower_bin_id, upper_bin_id, last_known_active_bin, bin_step,
       is_in_range, oor_alert_sent, approaching_alert_sent,
-      unclaimed_fee_x, unclaimed_fee_y, updated_at
+      unclaimed_fee_x, unclaimed_fee_y, total_x_amount, total_y_amount,
+      strategy_type, updated_at
     ) VALUES (
       @wallet_address, @position_address, @pool_address, @pool_name,
       @token_x_symbol, @token_y_symbol, @token_x_decimals, @token_y_decimals,
-      @lower_bin_id, @upper_bin_id, @last_known_active_bin,
+      @lower_bin_id, @upper_bin_id, @last_known_active_bin, @bin_step,
       @is_in_range, @oor_alert_sent, @approaching_alert_sent,
-      @unclaimed_fee_x, @unclaimed_fee_y, @updated_at
+      @unclaimed_fee_x, @unclaimed_fee_y, @total_x_amount, @total_y_amount,
+      @strategy_type, @updated_at
     )
     ON CONFLICT(position_address) DO UPDATE SET
       pool_address            = excluded.pool_address,
@@ -115,11 +141,15 @@ export function upsertPosition(pos: Omit<PositionRow, 'id'>): void {
       lower_bin_id            = excluded.lower_bin_id,
       upper_bin_id            = excluded.upper_bin_id,
       last_known_active_bin   = excluded.last_known_active_bin,
+      bin_step                = excluded.bin_step,
       is_in_range             = excluded.is_in_range,
       oor_alert_sent          = excluded.oor_alert_sent,
       approaching_alert_sent  = excluded.approaching_alert_sent,
       unclaimed_fee_x         = excluded.unclaimed_fee_x,
       unclaimed_fee_y         = excluded.unclaimed_fee_y,
+      total_x_amount          = excluded.total_x_amount,
+      total_y_amount          = excluded.total_y_amount,
+      strategy_type           = excluded.strategy_type,
       updated_at              = excluded.updated_at
   `).run(pos);
 }

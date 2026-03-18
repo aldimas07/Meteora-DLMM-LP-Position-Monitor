@@ -1,83 +1,116 @@
 import { Telegraf, Context } from 'telegraf';
 import { PositionAlert, AlertType } from './types';
-import { getPositionUrl } from './meteora';
+import { getPositionUrl, binIdToPrice } from './meteora';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function shortAddr(address: string): string {
   if (address.length <= 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
 
-function formatFees(feeX: number, feeY: number, symbolX: string, symbolY: string): string {
-  const fmtX = feeX.toLocaleString('en-US', { maximumFractionDigits: 6 });
-  const fmtY = feeY.toLocaleString('en-US', { maximumFractionDigits: 6 });
-  return `${fmtX} ${symbolX} / ${fmtY} ${symbolY}`;
+function fmtNum(n: number, digits = 6): string {
+  if (n === 0) return '0';
+  if (Math.abs(n) < 0.000001) return n.toExponential(2);
+  return n.toLocaleString('en-US', { maximumFractionDigits: digits });
+}
+
+function fmtPrice(price: number): string {
+  if (price === 0) return '0';
+  if (price < 0.0001) return price.toExponential(4);
+  if (price < 1) return price.toFixed(6);
+  if (price < 1000) return price.toFixed(4);
+  return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function strategyEmoji(s: string): string {
+  switch (s) {
+    case 'Spot': return '🎯';
+    case 'Curve': return '🔔';
+    case 'BidAsk': return '📊';
+    default: return '❓';
+  }
+}
+
+function directionText(activeId: number, upperBinId: number): string {
+  return activeId > upperBinId
+    ? '📈 Harga naik (melewati upper)'
+    : '📉 Harga turun (melewati lower)';
+}
+
+function priceRange(alert: PositionAlert): string {
+  if (alert.binStep === 0) return `Bin ${alert.lowerBinId} → ${alert.upperBinId}`;
+  const pLower = binIdToPrice(alert.lowerBinId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
+  const pUpper = binIdToPrice(alert.upperBinId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
+  return `${fmtPrice(pLower)} → ${fmtPrice(pUpper)} ${escapeHtml(alert.tokenYSymbol)}/${escapeHtml(alert.tokenXSymbol)}`;
+}
+
+function currentPrice(alert: PositionAlert): string {
+  if (alert.binStep === 0) return `Bin ${alert.activeId}`;
+  const p = binIdToPrice(alert.activeId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
+  return `${fmtPrice(p)} ${escapeHtml(alert.tokenYSymbol)}/${escapeHtml(alert.tokenXSymbol)}`;
 }
 
 // ─── Message Formatters ───────────────────────────────────────────────────────
 
 export function formatOOR(alert: PositionAlert): string {
-  const direction = alert.activeId > alert.upperBinId
-    ? '📈 Harga naik (melewati upper edge)'
-    : '📉 Harga turun (melewati lower edge)';
-
   return [
     `🔴 <b>OUT OF RANGE</b>`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
     ``,
-    `🏊 Pool: <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 Posisi: <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
+    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `📏 Range: ${priceRange(alert)}`,
+    `🧭 ${directionText(alert.activeId, alert.upperBinId)}`,
     ``,
-    `🎯 Active Bin: <b>${alert.activeId}</b>`,
-    `📏 Range Kamu: ${alert.lowerBinId} — ${alert.upperBinId}`,
-    `🧭 Arah: ${direction}`,
-    ``,
+    `💎 Deposit:`,
+    `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     `💰 Unclaimed Fees:`,
-    `   ${formatFees(alert.unclaimedFeeX, alert.unclaimedFeeY, alert.tokenXSymbol, alert.tokenYSymbol)}`,
+    `   ${fmtNum(alert.unclaimedFeeX)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.unclaimedFeeY)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     ``,
-    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Lihat di Meteora</a>`,
+    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
 }
 
 export function formatApproaching(alert: PositionAlert): string {
-  const side = alert.proximitySide === 'upper' ? 'Upper (atas)' : 'Lower (bawah)';
+  const side = alert.proximitySide === 'upper' ? '⬆️ Upper' : '⬇️ Lower';
 
   return [
     `⚠️ <b>APPROACHING RANGE EDGE</b>`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
     ``,
-    `🏊 Pool: <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 Posisi: <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
-    ``,
-    `🎯 Active Bin: <b>${alert.activeId}</b>`,
-    `📏 Range: ${alert.lowerBinId} — ${alert.upperBinId}`,
+    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `📏 Range: ${priceRange(alert)}`,
     `📐 Jarak ke edge: <b>${alert.proximityDistance} bins</b>`,
     `🧭 Sisi: ${side}`,
     ``,
-    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Lihat di Meteora</a>`,
+    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
 }
 
 export function formatBackInRange(alert: PositionAlert): string {
   return [
     `✅ <b>BACK IN RANGE</b>`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
     ``,
-    `🏊 Pool: <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 Posisi: <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
+    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>  — kembali ke dalam range!`,
+    `📏 Range: ${priceRange(alert)}`,
     ``,
-    `🎯 Active Bin: <b>${alert.activeId}</b> — kembali ke dalam range`,
-    `📏 Range: ${alert.lowerBinId} — ${alert.upperBinId}`,
-    ``,
+    `💎 Deposit:`,
+    `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     `💰 Unclaimed Fees:`,
-    `   ${formatFees(alert.unclaimedFeeX, alert.unclaimedFeeY, alert.tokenXSymbol, alert.tokenYSymbol)}`,
+    `   ${fmtNum(alert.unclaimedFeeX)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.unclaimedFeeY)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     ``,
-    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Lihat di Meteora</a>`,
+    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
 }
 
@@ -87,18 +120,20 @@ export function formatNewPosition(alert: PositionAlert): string {
 
   return [
     `🆕 <b>NEW POSITION DETECTED</b>`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
     ``,
-    `🏊 Pool: <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 Posisi: <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
-    ``,
-    `📏 Range: ${alert.lowerBinId} — ${alert.upperBinId}`,
-    `🎯 Active Bin: ${alert.activeId}`,
+    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `📏 Range: ${priceRange(alert)}`,
     `${statusEmoji} Status: <b>${statusText}</b>`,
     ``,
+    `💎 Deposit:`,
+    `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     `💰 Unclaimed Fees:`,
-    `   ${formatFees(alert.unclaimedFeeX, alert.unclaimedFeeY, alert.tokenXSymbol, alert.tokenYSymbol)}`,
+    `   ${fmtNum(alert.unclaimedFeeX)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.unclaimedFeeY)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
     ``,
-    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Lihat di Meteora</a>`,
+    `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
 }
 

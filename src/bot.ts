@@ -11,33 +11,47 @@ import {
   getChatId,
   walletExists,
 } from './db';
-import { fetchPortfolio, RateLimitError, getPositionUrl } from './meteora';
+import { fetchPortfolio, RateLimitError, getPositionUrl, binIdToPrice } from './meteora';
 import { runPollingCycle } from './monitor';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Basic Solana address validation (base58, 32-44 chars) */
 function isValidSolanaAddress(address: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
 
 function shortAddr(address: string): string {
   if (address.length <= 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function fmtFee(val: number): string {
-  return val.toLocaleString('en-US', { maximumFractionDigits: 6 });
+function fmtNum(n: number, digits = 6): string {
+  if (n === 0) return '0';
+  if (Math.abs(n) < 0.000001) return n.toExponential(2);
+  return n.toLocaleString('en-US', { maximumFractionDigits: digits });
 }
 
-/** Reply safely — falls back to plain text on HTML error */
+function fmtPrice(price: number): string {
+  if (price === 0) return '0';
+  if (price < 0.0001) return price.toExponential(4);
+  if (price < 1) return price.toFixed(6);
+  if (price < 1000) return price.toFixed(4);
+  return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function strategyEmoji(s: string): string {
+  switch (s) {
+    case 'Spot': return '🎯';
+    case 'Curve': return '🔔';
+    case 'BidAsk': return '📊';
+    default: return '❓';
+  }
+}
+
 async function reply(ctx: Context, text: string): Promise<void> {
   try {
     await ctx.reply(text, {
@@ -49,10 +63,11 @@ async function reply(ctx: Context, text: string): Promise<void> {
   }
 }
 
-// ─── Command: /start ──────────────────────────────────────────────────────────
+// ─── Command Registration ─────────────────────────────────────────────────────
 
 export function registerCommands(bot: Telegraf<Context>): void {
 
+  // ─── /start ────────────────────────────────────────────────────────────────
   bot.command('start', async (ctx) => {
     const chatId = String(ctx.chat.id);
     const existing = getChatId();
@@ -60,38 +75,44 @@ export function registerCommands(bot: Telegraf<Context>): void {
     if (!existing) {
       setChatId(chatId);
       await reply(ctx,
-        `👋 <b>Meteora DLMM LP Monitor</b> siap!\n\n` +
-        `✅ Chat ID <code>${chatId}</code> disimpan. Semua alert akan dikirim ke sini.\n\n` +
-        `Gunakan /help untuk melihat daftar command.`
+        `👋 <b>Meteora DLMM LP Monitor</b>\n` +
+        `━━━━━━━━━━━━━━━━━━\n\n` +
+        `✅ Chat ID <code>${chatId}</code> disimpan.\n` +
+        `Semua alert akan dikirim ke sini.\n\n` +
+        `Ketik /help untuk melihat daftar command.`
       );
     } else {
       await reply(ctx,
-        `👋 Bot sudah aktif!\n\nChat ID aktif: <code>${existing}</code>\n\nGunakan /help untuk melihat daftar command.`
+        `👋 Bot sudah aktif!\n\nChat ID: <code>${existing}</code>\nKetik /help untuk melihat command.`
       );
     }
   });
 
-  // ─── Command: /help ────────────────────────────────────────────────────────
-
+  // ─── /help ─────────────────────────────────────────────────────────────────
   bot.command('help', async (ctx) => {
     await reply(ctx,
-      `📖 <b>Daftar Command</b>\n\n` +
-      `<b>Wallet Management</b>\n` +
-      `/addwallet <code>&lt;address&gt;</code> — tambah wallet untuk di-track\n` +
-      `/removewallet <code>&lt;address&gt;</code> — stop tracking wallet\n` +
-      `/wallets — lihat semua wallet yang ditrack\n\n` +
-      `<b>Monitoring</b>\n` +
-      `/status — snapshot semua posisi saat ini\n` +
-      `/fees — lihat unclaimed fees semua posisi\n` +
-      `/setthreshold <code>&lt;N&gt;</code> — ubah jarak warning (default: 5 bins)\n\n` +
-      `<b>Info</b>\n` +
-      `/help — tampilkan pesan ini\n` +
-      `/start — set/cek chat ID alert`
+      `📖 <b>Meteora LP Monitor — Commands</b>\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n` +
+      `<b>🔑 Wallet</b>\n` +
+      `/addwallet <code>&lt;address&gt;</code> — track wallet\n` +
+      `/removewallet <code>&lt;address&gt;</code> — stop tracking\n` +
+      `/wallets — list semua wallet\n\n` +
+      `<b>📊 Monitor</b>\n` +
+      `/status — snapshot semua posisi\n` +
+      `/fees — lihat unclaimed fees\n` +
+      `/setthreshold <code>&lt;N&gt;</code> — jarak warning (bins)\n\n` +
+      `<b>ℹ️ Info</b>\n` +
+      `/help — pesan ini\n` +
+      `/start — set chat ID\n\n` +
+      `<b>Alert Types:</b>\n` +
+      `🔴 Out of Range\n` +
+      `⚠️ Approaching Edge\n` +
+      `✅ Back in Range\n` +
+      `🆕 New Position`
     );
   });
 
-  // ─── Command: /addwallet ───────────────────────────────────────────────────
-
+  // ─── /addwallet ────────────────────────────────────────────────────────────
   bot.command('addwallet', async (ctx) => {
     const parts = ctx.message.text.trim().split(/\s+/);
     const address = parts[1];
@@ -100,23 +121,22 @@ export function registerCommands(bot: Telegraf<Context>): void {
       return reply(ctx, `⚠️ Usage: /addwallet <code>&lt;solana_address&gt;</code>`);
     }
     if (!isValidSolanaAddress(address)) {
-      return reply(ctx, `❌ Alamat tidak valid. Pastikan itu adalah Solana address yang benar.`);
+      return reply(ctx, `❌ Alamat tidak valid. Pastikan itu Solana address yang benar.`);
     }
 
     const added = addWallet(address);
     if (added) {
       await reply(ctx,
-        `✅ Wallet ditambahkan!\n\n<code>${escapeHtml(address)}</code>\n\nMonitoring akan mulai di poll cycle berikutnya.`
+        `✅ <b>Wallet ditambahkan!</b>\n\n` +
+        `<code>${escapeHtml(address)}</code>\n\n` +
+        `Monitoring akan mulai di poll cycle berikutnya (maks 60 detik).`
       );
     } else {
-      await reply(ctx,
-        `ℹ️ Wallet sudah ada di daftar tracking:\n\n<code>${escapeHtml(address)}</code>`
-      );
+      await reply(ctx, `ℹ️ Wallet sudah ada di daftar tracking.`);
     }
   });
 
-  // ─── Command: /removewallet ────────────────────────────────────────────────
-
+  // ─── /removewallet ─────────────────────────────────────────────────────────
   bot.command('removewallet', async (ctx) => {
     const parts = ctx.message.text.trim().split(/\s+/);
     const address = parts[1];
@@ -128,40 +148,36 @@ export function registerCommands(bot: Telegraf<Context>): void {
     const removed = removeWallet(address);
     if (removed) {
       await reply(ctx,
-        `🗑️ Wallet dihapus dari tracking:\n\n<code>${escapeHtml(address)}</code>\n\nSemua data posisi terkait juga dihapus.`
+        `🗑️ <b>Wallet dihapus</b>\n\n<code>${escapeHtml(address)}</code>\n\nSemua data posisi terkait juga dihapus.`
       );
     } else {
-      await reply(ctx,
-        `⚠️ Wallet tidak ditemukan di daftar tracking:\n\n<code>${escapeHtml(address)}</code>`
-      );
+      await reply(ctx, `⚠️ Wallet tidak ditemukan di daftar tracking.`);
     }
   });
 
-  // ─── Command: /wallets ─────────────────────────────────────────────────────
-
+  // ─── /wallets ──────────────────────────────────────────────────────────────
   bot.command('wallets', async (ctx) => {
     const wallets = listWallets();
 
     if (wallets.length === 0) {
       return reply(ctx,
-        `📭 Belum ada wallet yang ditrack.\n\nGunakan /addwallet <code>&lt;address&gt;</code> untuk mulai.`
+        `📭 Belum ada wallet ditrack.\n\nGunakan /addwallet <code>&lt;address&gt;</code>`
       );
     }
 
     const lines = wallets.map((w, i) => {
       const date = new Date(w.added_at).toLocaleDateString('id-ID');
-      return `${i + 1}. <code>${escapeHtml(w.address)}</code>\n    📅 Ditambah: ${date}`;
+      return `${i + 1}. <code>${escapeHtml(w.address)}</code>\n    📅 ${date}`;
     });
 
     await reply(ctx,
-      `👛 <b>Wallet yang Ditrack (${wallets.length})</b>\n\n${lines.join('\n\n')}`
+      `👛 <b>Wallet Ditrack (${wallets.length})</b>\n━━━━━━━━━━━━━━━━━━\n\n${lines.join('\n\n')}`
     );
   });
 
-  // ─── Command: /status ──────────────────────────────────────────────────────
-
+  // ─── /status ───────────────────────────────────────────────────────────────
   bot.command('status', async (ctx) => {
-    const loadingMsg = await ctx.reply('🔄 Mengambil data posisi terbaru...');
+    const loadingMsg = await ctx.reply('🔄 Fetching positions...');
 
     try {
       const chatId = getChatId();
@@ -170,95 +186,108 @@ export function registerCommands(bot: Telegraf<Context>): void {
         return reply(ctx, `⚠️ Chat ID belum di-set. Kirim /start dulu.`);
       }
 
-      // Trigger a fresh poll cycle to update DB
       await runPollingCycle(bot);
-
       const positions = getAllPositions();
       await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
 
       if (positions.length === 0) {
         return reply(ctx,
-          `📭 Tidak ada posisi aktif ditemukan.\n\n` +
-          `Pastikan wallet sudah ditambah dan punya open DLMM positions.`
+          `📭 Tidak ada posisi aktif.\n\nPastikan wallet sudah ditambah dan punya open DLMM positions.`
         );
       }
 
       const threshold = getProximityThreshold();
-      const lines: string[] = [`📊 <b>Status Posisi (${positions.length})</b>\n`];
 
+      // Build per-position cards
+      const cards: string[] = [];
       for (const pos of positions) {
         const inRange = Boolean(pos.is_in_range);
         const distToUpper = pos.upper_bin_id - pos.last_known_active_bin;
         const distToLower = pos.last_known_active_bin - pos.lower_bin_id;
         const prox = Math.min(distToUpper, distToLower);
 
-        let statusEmoji: string;
-        let statusText: string;
+        let statusLine: string;
         if (!inRange) {
-          statusEmoji = '🔴';
-          statusText = 'OUT OF RANGE';
+          const dir = pos.last_known_active_bin > pos.upper_bin_id ? '📈' : '📉';
+          statusLine = `🔴 <b>OUT OF RANGE</b> ${dir}`;
         } else if (prox <= threshold) {
-          statusEmoji = '⚠️';
-          statusText = `APPROACHING (${prox} bins)`;
+          const side = distToUpper <= distToLower ? '⬆️' : '⬇️';
+          statusLine = `⚠️ <b>APPROACHING</b> ${side} (${prox} bins)`;
         } else {
-          statusEmoji = '✅';
-          statusText = 'IN RANGE';
+          statusLine = `✅ <b>IN RANGE</b>`;
         }
 
-        lines.push(
-          `${statusEmoji} <b>${escapeHtml(pos.pool_name)}</b>\n` +
-          `   Status: <b>${statusText}</b>\n` +
-          `   Active Bin: ${pos.last_known_active_bin} | Range: ${pos.lower_bin_id}–${pos.upper_bin_id}\n` +
-          `   Fees: ${fmtFee(pos.unclaimed_fee_x)} ${escapeHtml(pos.token_x_symbol)} / ${fmtFee(pos.unclaimed_fee_y)} ${escapeHtml(pos.token_y_symbol)}\n` +
-          `   <a href="${getPositionUrl(pos.position_address)}"><code>${shortAddr(pos.position_address)}</code></a>`
-        );
+        // Price display
+        const binStep = pos.bin_step || 0;
+        let priceInfo: string;
+        if (binStep > 0) {
+          const curPrice = binIdToPrice(pos.last_known_active_bin, binStep, pos.token_x_decimals, pos.token_y_decimals);
+          const lowPrice = binIdToPrice(pos.lower_bin_id, binStep, pos.token_x_decimals, pos.token_y_decimals);
+          const highPrice = binIdToPrice(pos.upper_bin_id, binStep, pos.token_x_decimals, pos.token_y_decimals);
+          const unit = `${escapeHtml(pos.token_y_symbol)}/${escapeHtml(pos.token_x_symbol)}`;
+          priceInfo = [
+            `💲 Price: <b>${fmtPrice(curPrice)}</b> ${unit}`,
+            `📏 Range: ${fmtPrice(lowPrice)} → ${fmtPrice(highPrice)}`,
+          ].join('\n');
+        } else {
+          priceInfo = [
+            `🎯 Active Bin: <b>${pos.last_known_active_bin}</b>`,
+            `📏 Range: ${pos.lower_bin_id} → ${pos.upper_bin_id}`,
+          ].join('\n');
+        }
+
+        const strategy = pos.strategy_type || 'Unknown';
+
+        cards.push([
+          `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(strategy)} ${strategy}`,
+          statusLine,
+          priceInfo,
+          `💎 ${fmtNum(pos.total_x_amount)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.total_y_amount)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
+          `💰 Fees: ${fmtNum(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
+          `🔗 <a href="${getPositionUrl(pos.position_address)}">${shortAddr(pos.position_address)}</a>`,
+        ].join('\n'));
       }
 
-      await reply(ctx, lines.join('\n'));
+      const header = `📊 <b>Status — ${positions.length} posisi</b>\n━━━━━━━━━━━━━━━━━━`;
+      await reply(ctx, header + '\n\n' + cards.join('\n\n━━━━━━━━━━━━━━━━━━\n\n'));
+
     } catch (err) {
       await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id).catch(() => {});
       if (err instanceof RateLimitError) {
         return reply(ctx, `⚠️ Rate limit API. Coba lagi dalam beberapa detik.`);
       }
       console.error('[bot] /status error:', err);
-      await reply(ctx, `❌ Terjadi error saat mengambil data. Cek log untuk detail.`);
+      await reply(ctx, `❌ Error saat mengambil data. Cek log untuk detail.`);
     }
   });
 
-  // ─── Command: /fees ────────────────────────────────────────────────────────
-
+  // ─── /fees ─────────────────────────────────────────────────────────────────
   bot.command('fees', async (ctx) => {
     const positions = getAllPositions();
 
     if (positions.length === 0) {
       return reply(ctx,
-        `📭 Tidak ada posisi ditemukan di database.\n\nGunakan /addwallet lalu tunggu poll cycle pertama, atau coba /status untuk refresh.`
+        `📭 Tidak ada posisi. Gunakan /addwallet lalu /status untuk refresh.`
       );
     }
 
-    const lines: string[] = [`💰 <b>Unclaimed Fees</b>\n`];
-
-    let anyFees = false;
+    const cards: string[] = [];
     for (const pos of positions) {
       const hasFees = pos.unclaimed_fee_x > 0 || pos.unclaimed_fee_y > 0;
-      if (hasFees) anyFees = true;
+      const feeEmoji = hasFees ? '💰' : '➖';
 
-      lines.push(
-        `🏊 <b>${escapeHtml(pos.pool_name)}</b>\n` +
-        `   ${fmtFee(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> / ${fmtFee(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>\n` +
-        `   <a href="${getPositionUrl(pos.position_address)}"><code>${shortAddr(pos.position_address)}</code></a>`
-      );
+      cards.push([
+        `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(pos.strategy_type || 'Unknown')} ${pos.strategy_type || 'Unknown'}`,
+        `${feeEmoji} ${fmtNum(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
+        `🔗 <a href="${getPositionUrl(pos.position_address)}">${shortAddr(pos.position_address)}</a>`,
+      ].join('\n'));
     }
 
-    if (!anyFees) {
-      lines.push(`\nℹ️ Semua posisi belum ada unclaimed fees.`);
-    }
-
-    await reply(ctx, lines.join('\n'));
+    const header = `💰 <b>Unclaimed Fees</b>\n━━━━━━━━━━━━━━━━━━`;
+    await reply(ctx, header + '\n\n' + cards.join('\n\n'));
   });
 
-  // ─── Command: /setthreshold ────────────────────────────────────────────────
-
+  // ─── /setthreshold ─────────────────────────────────────────────────────────
   bot.command('setthreshold', async (ctx) => {
     const parts = ctx.message.text.trim().split(/\s+/);
     const raw = parts[1];
@@ -266,29 +295,26 @@ export function registerCommands(bot: Telegraf<Context>): void {
     if (!raw) {
       const current = getProximityThreshold();
       return reply(ctx,
-        `⚠️ Usage: /setthreshold <code>&lt;N&gt;</code>\n\nThreshold saat ini: <b>${current} bins</b>`
+        `⚠️ Usage: /setthreshold <code>&lt;N&gt;</code>\n\nSaat ini: <b>${current} bins</b>`
       );
     }
 
     const n = parseInt(raw, 10);
     if (isNaN(n) || n < 1 || n > 1000) {
-      return reply(ctx, `❌ Nilai tidak valid. Gunakan angka antara 1–1000.`);
+      return reply(ctx, `❌ Nilai tidak valid. Gunakan angka 1–1000.`);
     }
 
     setConfig('proximity_threshold', String(n));
     await reply(ctx,
-      `✅ Proximity threshold diubah ke <b>${n} bins</b>.\n\nBot akan kirim ⚠️ warning saat posisi dalam jarak ${n} bin dari edge.`
+      `✅ Threshold diubah ke <b>${n} bins</b>.\n\n⚠️ Warning akan dikirim saat posisi dalam jarak ${n} bin dari edge.`
     );
   });
 
-  // ─── Fallback: unknown commands ────────────────────────────────────────────
-
+  // ─── Fallback ──────────────────────────────────────────────────────────────
   bot.on(message('text'), async (ctx) => {
     const text = ctx.message.text;
     if (text.startsWith('/')) {
-      await reply(ctx,
-        `❓ Command tidak dikenal. Gunakan /help untuk melihat daftar command yang tersedia.`
-      );
+      await reply(ctx, `❓ Command tidak dikenal. Ketik /help`);
     }
   });
 }
