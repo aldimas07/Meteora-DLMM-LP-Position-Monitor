@@ -15,6 +15,7 @@ export interface PortfolioPool {
   name: string;
   activeId: number;
   binStep: number;
+  activePricePerToken: string;
   tokenX: PoolToken;
   tokenY: PoolToken;
 }
@@ -26,22 +27,34 @@ export interface PortfolioPosition {
   upperBinId: number;
   totalUnclaimedFeeX: number;
   totalUnclaimedFeeY: number;
-  totalXAmount: number;      // current token X amount in position
-  totalYAmount: number;      // current token Y amount in position
-  strategyType: string;      // 'Spot' | 'Curve' | 'BidAsk' | 'Unknown'
+  totalXAmount: number;
+  totalYAmount: number;
+  strategyType: string;
+  lowerPricePerToken: string;
+  upperPricePerToken: string;
   pool: PortfolioPool;
 }
 
 // ─── Database Row Types ───────────────────────────────────────────────────────
 
+export interface UserRow {
+  id: number;
+  chat_id: string;
+  username: string;
+  first_name: string;
+  joined_at: number;
+}
+
 export interface WalletRow {
   id: number;
+  chat_id: string;
   address: string;
   added_at: number;
 }
 
 export interface PositionRow {
   id: number;
+  chat_id: string;
   wallet_address: string;
   position_address: string;
   pool_address: string;
@@ -54,7 +67,7 @@ export interface PositionRow {
   upper_bin_id: number;
   last_known_active_bin: number;
   bin_step: number;
-  is_in_range: number; // SQLite stores booleans as 0/1
+  is_in_range: number;
   oor_alert_sent: number;
   approaching_alert_sent: number;
   unclaimed_fee_x: number;
@@ -62,6 +75,9 @@ export interface PositionRow {
   total_x_amount: number;
   total_y_amount: number;
   strategy_type: string;
+  active_price: string;
+  lower_price: string;
+  upper_price: string;
   updated_at: number;
 }
 
@@ -81,6 +97,7 @@ export enum AlertType {
 
 /** Enriched position used for alert formatting */
 export interface PositionAlert {
+  chatId: string;
   walletAddress: string;
   positionAddress: string;
   poolAddress: string;
@@ -101,5 +118,8 @@ export interface PositionAlert {
   totalXAmount: number;
   totalYAmount: number;
   strategyType: string;
+  activePrice: string;
+  lowerPrice: string;
+  upperPrice: string;
   alertType: AlertType;
 }

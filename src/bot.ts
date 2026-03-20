@@ -7,11 +7,12 @@ import {
   getAllPositions,
   getProximityThreshold,
   setConfig,
-  setChatId,
-  getChatId,
-  walletExists,
+  registerUser,
+  isNewUser,
+  getTotalUsers,
+  getAllTrackedWallets,
 } from './db';
-import { fetchPortfolio, RateLimitError, getPositionUrl, binIdToPrice } from './meteora';
+import { getPositionUrl, formatPriceStr } from './meteora';
 import { runPollingCycle } from './monitor';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -35,14 +36,6 @@ function fmtNum(n: number, digits = 6): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: digits });
 }
 
-function fmtPrice(price: number): string {
-  if (price === 0) return '0';
-  if (price < 0.0001) return price.toExponential(4);
-  if (price < 1) return price.toFixed(6);
-  if (price < 1000) return price.toFixed(4);
-  return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
-}
-
 function strategyEmoji(s: string): string {
   switch (s) {
     case 'Spot': return '🎯';
@@ -63,6 +56,16 @@ async function reply(ctx: Context, text: string): Promise<void> {
   }
 }
 
+async function notifyAdmin(bot: Telegraf<Context>, text: string): Promise<void> {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId) return;
+  try {
+    await bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('[bot] Failed to send admin alert:', err);
+  }
+}
+
 // ─── Command Registration ─────────────────────────────────────────────────────
 
 export function registerCommands(bot: Telegraf<Context>): void {
@@ -70,22 +73,30 @@ export function registerCommands(bot: Telegraf<Context>): void {
   // ─── /start ────────────────────────────────────────────────────────────────
   bot.command('start', async (ctx) => {
     const chatId = String(ctx.chat.id);
-    const existing = getChatId();
+    const username = ctx.from?.username || '';
+    const firstName = ctx.from?.first_name || '';
 
-    if (!existing) {
-      setChatId(chatId);
-      await reply(ctx,
-        `👋 <b>Meteora DLMM LP Monitor</b>\n` +
-        `━━━━━━━━━━━━━━━━━━\n\n` +
-        `✅ Chat ID <code>${chatId}</code> disimpan.\n` +
-        `Semua alert akan dikirim ke sini.\n\n` +
-        `Ketik /help untuk melihat daftar command.`
-      );
-    } else {
-      await reply(ctx,
-        `👋 Bot sudah aktif!\n\nChat ID: <code>${existing}</code>\nKetik /help untuk melihat command.`
+    const isNew = isNewUser(chatId);
+    registerUser(chatId, username, firstName);
+
+    if (isNew) {
+      const userDisplay = username ? `@${username}` : firstName;
+      const total = getTotalUsers();
+      void notifyAdmin(
+        bot,
+        `🚨 <b>New User!</b>\n` +
+        `👤 ${escapeHtml(userDisplay)}\n` +
+        `🆔 <code>${chatId}</code>\n` +
+        `📊 Total Users: ${total}`
       );
     }
+
+    await reply(ctx,
+      `👋 <b>Meteora DLMM LP Monitor</b>\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n` +
+      `✅ Chat ID <code>${chatId}</code> tersimpan.\n\n` +
+      `Ketik /help untuk melihat daftar command.`
+    );
   });
 
   // ─── /help ─────────────────────────────────────────────────────────────────
@@ -102,18 +113,13 @@ export function registerCommands(bot: Telegraf<Context>): void {
       `/fees — lihat unclaimed fees\n` +
       `/setthreshold <code>&lt;N&gt;</code> — jarak warning (bins)\n\n` +
       `<b>ℹ️ Info</b>\n` +
-      `/help — pesan ini\n` +
-      `/start — set chat ID\n\n` +
-      `<b>Alert Types:</b>\n` +
-      `🔴 Out of Range\n` +
-      `⚠️ Approaching Edge\n` +
-      `✅ Back in Range\n` +
-      `🆕 New Position`
+      `/help — pesan ini`
     );
   });
 
   // ─── /addwallet ────────────────────────────────────────────────────────────
   bot.command('addwallet', async (ctx) => {
+    const chatId = String(ctx.chat.id);
     const parts = ctx.message.text.trim().split(/\s+/);
     const address = parts[1];
 
@@ -121,23 +127,26 @@ export function registerCommands(bot: Telegraf<Context>): void {
       return reply(ctx, `⚠️ Usage: /addwallet <code>&lt;solana_address&gt;</code>`);
     }
     if (!isValidSolanaAddress(address)) {
-      return reply(ctx, `❌ Alamat tidak valid. Pastikan itu Solana address yang benar.`);
+      return reply(ctx, `❌ Alamat tidak valid.`);
     }
 
-    const added = addWallet(address);
+    registerUser(chatId, ctx.from?.username || '', ctx.from?.first_name || '');
+
+    const added = addWallet(chatId, address);
     if (added) {
       await reply(ctx,
         `✅ <b>Wallet ditambahkan!</b>\n\n` +
         `<code>${escapeHtml(address)}</code>\n\n` +
-        `Monitoring akan mulai di poll cycle berikutnya (maks 60 detik).`
+        `Monitoring dimulai di poll cycle berikutnya.`
       );
     } else {
-      await reply(ctx, `ℹ️ Wallet sudah ada di daftar tracking.`);
+      await reply(ctx, `ℹ️ Wallet sudah ada di daftar tracking kamu.`);
     }
   });
 
   // ─── /removewallet ─────────────────────────────────────────────────────────
   bot.command('removewallet', async (ctx) => {
+    const chatId = String(ctx.chat.id);
     const parts = ctx.message.text.trim().split(/\s+/);
     const address = parts[1];
 
@@ -145,19 +154,20 @@ export function registerCommands(bot: Telegraf<Context>): void {
       return reply(ctx, `⚠️ Usage: /removewallet <code>&lt;solana_address&gt;</code>`);
     }
 
-    const removed = removeWallet(address);
+    const removed = removeWallet(chatId, address);
     if (removed) {
       await reply(ctx,
-        `🗑️ <b>Wallet dihapus</b>\n\n<code>${escapeHtml(address)}</code>\n\nSemua data posisi terkait juga dihapus.`
+        `🗑️ <b>Wallet dihapus</b>\n\n<code>${escapeHtml(address)}</code>`
       );
     } else {
-      await reply(ctx, `⚠️ Wallet tidak ditemukan di daftar tracking.`);
+      await reply(ctx, `⚠️ Wallet tidak ditemukan di daftar tracking kamu.`);
     }
   });
 
   // ─── /wallets ──────────────────────────────────────────────────────────────
   bot.command('wallets', async (ctx) => {
-    const wallets = listWallets();
+    const chatId = String(ctx.chat.id);
+    const wallets = listWallets(chatId);
 
     if (wallets.length === 0) {
       return reply(ctx,
@@ -177,29 +187,24 @@ export function registerCommands(bot: Telegraf<Context>): void {
 
   // ─── /status ───────────────────────────────────────────────────────────────
   bot.command('status', async (ctx) => {
-    const loadingMsg = await ctx.reply('🔄 Fetching positions...');
+    const chatId = String(ctx.chat.id);
+    const loadingMsg = await ctx.reply('🔄 Syncing positions...');
 
     try {
-      const chatId = getChatId();
-      if (!chatId) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-        return reply(ctx, `⚠️ Chat ID belum di-set. Kirim /start dulu.`);
-      }
-
       await runPollingCycle(bot);
-      const positions = getAllPositions();
-      await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
+
+      const positions = getAllPositions(chatId);
+      await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id).catch(() => {});
 
       if (positions.length === 0) {
         return reply(ctx,
-          `📭 Tidak ada posisi aktif.\n\nPastikan wallet sudah ditambah dan punya open DLMM positions.`
+          `📭 Tidak ada posisi aktif.\n\nPastikan wallet ditambah dan punya open DLMM positions.`
         );
       }
 
       const threshold = getProximityThreshold();
-
-      // Build per-position cards
       const cards: string[] = [];
+
       for (const pos of positions) {
         const inRange = Boolean(pos.is_in_range);
         const distToUpper = pos.upper_bin_id - pos.last_known_active_bin;
@@ -217,57 +222,40 @@ export function registerCommands(bot: Telegraf<Context>): void {
           statusLine = `✅ <b>IN RANGE</b>`;
         }
 
-        // Price display
-        const binStep = pos.bin_step || 0;
-        let priceInfo: string;
-        if (binStep > 0) {
-          const curPrice = binIdToPrice(pos.last_known_active_bin, binStep, pos.token_x_decimals, pos.token_y_decimals);
-          const lowPrice = binIdToPrice(pos.lower_bin_id, binStep, pos.token_x_decimals, pos.token_y_decimals);
-          const highPrice = binIdToPrice(pos.upper_bin_id, binStep, pos.token_x_decimals, pos.token_y_decimals);
-          const unit = `${escapeHtml(pos.token_y_symbol)}/${escapeHtml(pos.token_x_symbol)}`;
-          priceInfo = [
-            `💲 Price: <b>${fmtPrice(curPrice)}</b> ${unit}`,
-            `📏 Range: ${fmtPrice(lowPrice)} → ${fmtPrice(highPrice)}`,
-          ].join('\n');
-        } else {
-          priceInfo = [
-            `🎯 Active Bin: <b>${pos.last_known_active_bin}</b>`,
-            `📏 Range: ${pos.lower_bin_id} → ${pos.upper_bin_id}`,
-          ].join('\n');
-        }
-
         const strategy = pos.strategy_type || 'Unknown';
+        const unit = `${escapeHtml(pos.token_y_symbol)} per ${escapeHtml(pos.token_x_symbol)}`;
+        const activeP = formatPriceStr(pos.active_price || '0');
+        const lowP = formatPriceStr(pos.lower_price || '0');
+        const highP = formatPriceStr(pos.upper_price || '0');
 
         cards.push([
           `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(strategy)} ${strategy}`,
           statusLine,
-          priceInfo,
+          `💲 Harga: <b>${activeP}</b> ${unit}`,
+          `📏 Range: ${lowP} → ${highP}`,
           `💎 ${fmtNum(pos.total_x_amount)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.total_y_amount)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
           `💰 Fees: ${fmtNum(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
           `🔗 <a href="${getPositionUrl(pos.position_address)}">${shortAddr(pos.position_address)}</a>`,
         ].join('\n'));
       }
 
-      const header = `📊 <b>Status — ${positions.length} posisi</b>\n━━━━━━━━━━━━━━━━━━`;
-      await reply(ctx, header + '\n\n' + cards.join('\n\n━━━━━━━━━━━━━━━━━━\n\n'));
+      await reply(ctx, `📊 <b>Status — ${positions.length} posisi</b>\n━━━━━━━━━━━━━━━━━━\n\n` + cards.join('\n\n━━━━━━━━━━━━━━━━━━\n\n'));
 
     } catch (err) {
       await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id).catch(() => {});
-      if (err instanceof RateLimitError) {
-        return reply(ctx, `⚠️ Rate limit API. Coba lagi dalam beberapa detik.`);
-      }
       console.error('[bot] /status error:', err);
-      await reply(ctx, `❌ Error saat mengambil data. Cek log untuk detail.`);
+      await reply(ctx, `❌ Error mengambil data.`);
     }
   });
 
   // ─── /fees ─────────────────────────────────────────────────────────────────
   bot.command('fees', async (ctx) => {
-    const positions = getAllPositions();
+    const chatId = String(ctx.chat.id);
+    const positions = getAllPositions(chatId);
 
     if (positions.length === 0) {
       return reply(ctx,
-        `📭 Tidak ada posisi. Gunakan /addwallet lalu /status untuk refresh.`
+        `📭 Tidak ada posisi. /status untuk refresh data.`
       );
     }
 
@@ -283,8 +271,25 @@ export function registerCommands(bot: Telegraf<Context>): void {
       ].join('\n'));
     }
 
-    const header = `💰 <b>Unclaimed Fees</b>\n━━━━━━━━━━━━━━━━━━`;
-    await reply(ctx, header + '\n\n' + cards.join('\n\n'));
+    await reply(ctx, `💰 <b>Unclaimed Fees</b>\n━━━━━━━━━━━━━━━━━━\n\n` + cards.join('\n\n'));
+  });
+
+  // ─── /adminstats ───────────────────────────────────────────────────────────
+  bot.command('adminstats', async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const adminId = process.env.ADMIN_CHAT_ID;
+
+    if (!adminId || chatId !== adminId) {
+      return reply(ctx, `⛔ Command ini hanya untuk Admin.`);
+    }
+
+    const totalUsers = getTotalUsers();
+    const wallets = getAllTrackedWallets();
+    await reply(ctx,
+      `📈 <b>System Stats</b>\n━━━━━━━━━━━━━━━━━━\n\n` +
+      `👥 Users: <b>${totalUsers}</b>\n` +
+      `👛 Wallets: <b>${wallets.length}</b>`
+    );
   });
 
   // ─── /setthreshold ─────────────────────────────────────────────────────────
@@ -306,7 +311,7 @@ export function registerCommands(bot: Telegraf<Context>): void {
 
     setConfig('proximity_threshold', String(n));
     await reply(ctx,
-      `✅ Threshold diubah ke <b>${n} bins</b>.\n\n⚠️ Warning akan dikirim saat posisi dalam jarak ${n} bin dari edge.`
+      `✅ Threshold: <b>${n} bins</b>`
     );
   });
 

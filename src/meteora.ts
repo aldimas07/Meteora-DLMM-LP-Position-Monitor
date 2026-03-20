@@ -65,37 +65,108 @@ interface DatapiPortfolioResponse {
 
 /**
  * Infer strategy type from the liquidity distribution shape.
- * On-chain positions don't store strategy type — we approximate by
- * analyzing per-bin liquidity distribution.
+ *
+ * Meteora DLMM strategies place liquidity differently:
+ *   Spot    → uniform distribution across all bins (flat shape)
+ *   Curve   → bell-curve / gaussian, peaked at center, tapering at edges
+ *   BidAsk  → inverse-bell / bathtub shape, heavy at edges, light in the middle
+ *
+ * We analyze the normalized liquidity array to classify.
  */
-function inferStrategyType(positionBinData: Array<{ positionLiquidity: string; binId: number }>): string {
+function inferStrategyType(
+  positionBinData: Array<{ positionLiquidity: string; binId: number }>
+): string {
   if (!positionBinData || positionBinData.length === 0) return 'Unknown';
   if (positionBinData.length === 1) return 'Spot';
+  if (positionBinData.length <= 2) return 'Spot';
 
   const liquidities = positionBinData.map(b => parseFloat(b.positionLiquidity || '0'));
-  const maxLiq = Math.max(...liquidities);
-  if (maxLiq === 0) return 'Unknown';
+  const total = liquidities.reduce((a, b) => a + b, 0);
+  if (total === 0) return 'Unknown';
 
-  const normalized = liquidities.map(l => l / maxLiq);
+  const n = liquidities.length;
+  const normalized = liquidities.map(l => l / total);
 
-  // Check if relatively uniform → Spot
-  const avg = normalized.reduce((a, b) => a + b, 0) / normalized.length;
-  const variance = normalized.reduce((a, b) => a + (b - avg) ** 2, 0) / normalized.length;
-  if (variance < 0.05) return 'Spot';
+  // Coefficient of Variation — how "uneven" the distribution is
+  const mean = 1 / n; // normalized mean is always 1/n
+  const variance = normalized.reduce((acc, v) => acc + (v - mean) ** 2, 0) / n;
+  const cv = Math.sqrt(variance) / mean;
 
-  // Check if peaked in the middle → Curve
-  const midIndex = Math.floor(normalized.length / 2);
-  const midValue = normalized[midIndex];
-  const edgeAvg = (normalized[0] + normalized[normalized.length - 1]) / 2;
-  if (midValue > edgeAvg * 1.5 && variance > 0.05) return 'Curve';
+  // If very uniform (CV < 0.15), it's Spot
+  if (cv < 0.15) return 'Spot';
 
-  // Check if one-sided concentration → BidAsk
-  const firstHalf = normalized.slice(0, midIndex).reduce((a, b) => a + b, 0);
-  const secondHalf = normalized.slice(midIndex).reduce((a, b) => a + b, 0);
-  const sideRatio = Math.min(firstHalf, secondHalf) / Math.max(firstHalf, secondHalf);
-  if (sideRatio < 0.3) return 'BidAsk';
+  // Compare edge weight vs center weight to distinguish Curve from BidAsk
+  // Take outer 25% bins as "edges" and inner 50% as "center"
+  const edgeCount = Math.max(1, Math.floor(n * 0.25));
+  const edgeSum =
+    normalized.slice(0, edgeCount).reduce((a, b) => a + b, 0) +
+    normalized.slice(n - edgeCount).reduce((a, b) => a + b, 0);
+  const centerStart = Math.floor(n * 0.25);
+  const centerEnd = Math.ceil(n * 0.75);
+  const centerSlice = normalized.slice(centerStart, centerEnd);
+  const centerSum = centerSlice.reduce((a, b) => a + b, 0);
+
+  // Ratio: how much heavier is center vs edges?
+  // Curve: center >> edges → centerWeight high
+  // BidAsk: edges >> center → edgeWeight high
+  const totalEdgeBins = edgeCount * 2;
+  const totalCenterBins = centerEnd - centerStart;
+  const edgeAvg = edgeSum / totalEdgeBins;
+  const centerAvg = centerSum / totalCenterBins;
+
+  if (centerAvg > edgeAvg * 1.3) {
+    return 'Curve';
+  } else if (edgeAvg > centerAvg * 1.3) {
+    return 'BidAsk';
+  }
+
+  // If distribution is uneven but doesn't clearly match either pattern,
+  // check if one side dominates (another BidAsk indicator)
+  const midpoint = Math.floor(n / 2);
+  const leftSum = normalized.slice(0, midpoint).reduce((a, b) => a + b, 0);
+  const rightSum = normalized.slice(midpoint).reduce((a, b) => a + b, 0);
+  const sideRatio = Math.min(leftSum, rightSum) / Math.max(leftSum, rightSum);
+
+  // Strong one-sided concentration suggests BidAsk
+  if (sideRatio < 0.35 && cv > 0.3) return 'BidAsk';
+
+  // Moderate unevenness that's still somewhat symmetric → Curve
+  if (cv > 0.2) return 'Curve';
 
   return 'Spot';
+}
+
+// ─── Price Utilities ──────────────────────────────────────────────────────────
+
+/**
+ * Convert a bin ID to a human-readable price using the DLMM formula.
+ * Formula: price = (1 + binStep/10000)^binId * 10^(decimalsX - decimalsY)
+ * This gives price in tokenY per tokenX.
+ */
+export function binIdToPrice(
+  binId: number,
+  binStep: number,
+  decimalsX: number,
+  decimalsY: number
+): number {
+  const pricePerLamport = Math.pow(1 + binStep / 10000, binId);
+  return pricePerLamport * Math.pow(10, decimalsX - decimalsY);
+}
+
+/**
+ * Format a price string to be human-readable.
+ * Handles very small, normal, and very large prices.
+ */
+export function formatPriceStr(priceStr: string): string {
+  const p = parseFloat(priceStr);
+  if (isNaN(p) || p === 0) return '0';
+  if (p < 0.000001) return p.toExponential(2);
+  if (p < 0.01) return p.toPrecision(4);
+  if (p < 1) return p.toFixed(4);
+  if (p < 10) return p.toFixed(3);
+  if (p < 1000) return p.toFixed(2);
+  if (p < 100000) return p.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return p.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 // ─── API Client ───────────────────────────────────────────────────────────────
@@ -142,6 +213,9 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
       const decimalsY = dlmm.tokenY.mint.decimals;
       const binStep = dlmm.lbPair.binStep;
 
+      // Human-readable active price directly from SDK
+      const activePricePerToken = activeBin.pricePerToken;
+
       const { userPositions } = await dlmm.getPositionsByUserAndLbPair(userPubkey);
 
       for (const pos of userPositions) {
@@ -158,8 +232,20 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
         const totalXAmount = parseFloat(pos.positionData.totalXAmount) / Math.pow(10, decimalsX);
         const totalYAmount = parseFloat(pos.positionData.totalYAmount) / Math.pow(10, decimalsY);
 
+        // Get price at lower and upper bound from positionBinData
+        const bins = pos.positionData.positionBinData;
+        let lowerPricePerToken = '0';
+        let upperPricePerToken = '0';
+
+        if (bins.length > 0) {
+          // Bins are sorted by binId; the first is lowest, last is highest
+          const sorted = [...bins].sort((a, b) => a.binId - b.binId);
+          lowerPricePerToken = sorted[0].pricePerToken;
+          upperPricePerToken = sorted[sorted.length - 1].pricePerToken;
+        }
+
         // Infer strategy type from bin distribution
-        const strategyType = inferStrategyType(pos.positionData.positionBinData);
+        const strategyType = inferStrategyType(bins);
 
         results.push({
           positionAddress: pos.publicKey.toBase58(),
@@ -170,11 +256,14 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
           totalXAmount,
           totalYAmount,
           strategyType,
+          lowerPricePerToken,
+          upperPricePerToken,
           pool: {
             address: p.poolAddress,
             name: `${p.tokenX}-${p.tokenY}`,
             activeId,
             binStep,
+            activePricePerToken,
             tokenX: { address: p.tokenXMint, symbol: p.tokenX, decimals: decimalsX },
             tokenY: { address: p.tokenYMint, symbol: p.tokenY, decimals: decimalsY },
           },
@@ -191,10 +280,4 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
 /** Format a Meteora app URL for a given position */
 export function getPositionUrl(positionAddress: string): string {
   return `https://app.meteora.ag/dlmm?position=${positionAddress}`;
-}
-
-/** Convert a bin ID to a human-readable price using binStep */
-export function binIdToPrice(binId: number, binStep: number, decimalsX: number, decimalsY: number): number {
-  const pricePerLamport = Math.pow(1 + binStep / 10000, binId);
-  return pricePerLamport * Math.pow(10, decimalsX - decimalsY);
 }

@@ -1,6 +1,6 @@
 import { Telegraf, Context } from 'telegraf';
 import { PositionAlert, AlertType } from './types';
-import { getPositionUrl, binIdToPrice } from './meteora';
+import { getPositionUrl, formatPriceStr } from './meteora';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,14 +13,6 @@ function fmtNum(n: number, digits = 6): string {
   if (n === 0) return '0';
   if (Math.abs(n) < 0.000001) return n.toExponential(2);
   return n.toLocaleString('en-US', { maximumFractionDigits: digits });
-}
-
-function fmtPrice(price: number): string {
-  if (price === 0) return '0';
-  if (price < 0.0001) return price.toExponential(4);
-  if (price < 1) return price.toFixed(6);
-  if (price < 1000) return price.toFixed(4);
-  return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
 function escapeHtml(text: string): string {
@@ -42,17 +34,19 @@ function directionText(activeId: number, upperBinId: number): string {
     : '📉 Harga turun (melewati lower)';
 }
 
-function priceRange(alert: PositionAlert): string {
-  if (alert.binStep === 0) return `Bin ${alert.lowerBinId} → ${alert.upperBinId}`;
-  const pLower = binIdToPrice(alert.lowerBinId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
-  const pUpper = binIdToPrice(alert.upperBinId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
-  return `${fmtPrice(pLower)} → ${fmtPrice(pUpper)} ${escapeHtml(alert.tokenYSymbol)}/${escapeHtml(alert.tokenXSymbol)}`;
+/** Format price unit label, e.g. "USDC per SOL" */
+function priceUnit(alert: PositionAlert): string {
+  return `${escapeHtml(alert.tokenYSymbol)} per ${escapeHtml(alert.tokenXSymbol)}`;
 }
 
+/** Format the range using SDK prices */
+function priceRange(alert: PositionAlert): string {
+  return `${formatPriceStr(alert.lowerPrice)} → ${formatPriceStr(alert.upperPrice)} ${priceUnit(alert)}`;
+}
+
+/** Format current price using SDK activePricePerToken */
 function currentPrice(alert: PositionAlert): string {
-  if (alert.binStep === 0) return `Bin ${alert.activeId}`;
-  const p = binIdToPrice(alert.activeId, alert.binStep, alert.tokenXDecimals, alert.tokenYDecimals);
-  return `${fmtPrice(p)} ${escapeHtml(alert.tokenYSymbol)}/${escapeHtml(alert.tokenXSymbol)}`;
+  return `${formatPriceStr(alert.activePrice)} ${priceUnit(alert)}`;
 }
 
 // ─── Message Formatters ───────────────────────────────────────────────────────
@@ -61,10 +55,10 @@ export function formatOOR(alert: PositionAlert): string {
   return [
     `🔴 <b>OUT OF RANGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
-    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `💲 Harga: <b>${currentPrice(alert)}</b>`,
     `📏 Range: ${priceRange(alert)}`,
     `🧭 ${directionText(alert.activeId, alert.upperBinId)}`,
     ``,
@@ -83,13 +77,12 @@ export function formatApproaching(alert: PositionAlert): string {
   return [
     `⚠️ <b>APPROACHING RANGE EDGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
-    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `💲 Harga: <b>${currentPrice(alert)}</b>`,
     `📏 Range: ${priceRange(alert)}`,
-    `📐 Jarak ke edge: <b>${alert.proximityDistance} bins</b>`,
-    `🧭 Sisi: ${side}`,
+    `📐 Jarak: <b>${alert.proximityDistance} bins</b> dari ${side}`,
     ``,
     `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
@@ -99,10 +92,10 @@ export function formatBackInRange(alert: PositionAlert): string {
   return [
     `✅ <b>BACK IN RANGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
-    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>  — kembali ke dalam range!`,
+    `💲 Harga: <b>${currentPrice(alert)}</b> — kembali ke range!`,
     `📏 Range: ${priceRange(alert)}`,
     ``,
     `💎 Deposit:`,
@@ -121,10 +114,10 @@ export function formatNewPosition(alert: PositionAlert): string {
   return [
     `🆕 <b>NEW POSITION DETECTED</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
-    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
-    `💲 Harga Saat Ini: <b>${currentPrice(alert)}</b>`,
+    `💲 Harga: <b>${currentPrice(alert)}</b>`,
     `📏 Range: ${priceRange(alert)}`,
     `${statusEmoji} Status: <b>${statusText}</b>`,
     ``,

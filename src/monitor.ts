@@ -1,13 +1,12 @@
 import { Telegraf, Context } from 'telegraf';
 import { PortfolioPosition, AlertType, PositionAlert } from './types';
 import {
-  listWallets,
+  getAllTrackedWallets,
   getPosition,
   upsertPosition,
   deletePosition,
   getKnownPositionAddresses,
   getProximityThreshold,
-  getChatId,
 } from './db';
 import { fetchPortfolio, RateLimitError, delay } from './meteora';
 import { sendAlert } from './alerts';
@@ -45,18 +44,25 @@ function computeState(
 
 async function processPosition(
   bot: Telegraf<Context>,
+  chatId: string,
   walletAddress: string,
   apiPos: PortfolioPosition,
-  threshold: number,
-  chatId: string
+  threshold: number
 ): Promise<void> {
-  const { positionAddress, lowerBinId, upperBinId, totalUnclaimedFeeX, totalUnclaimedFeeY, totalXAmount, totalYAmount, strategyType, pool } = apiPos;
+  const {
+    positionAddress, lowerBinId, upperBinId,
+    totalUnclaimedFeeX, totalUnclaimedFeeY,
+    totalXAmount, totalYAmount, strategyType,
+    lowerPricePerToken, upperPricePerToken,
+    pool,
+  } = apiPos;
   const activeId = pool.activeId;
   const { isInRange, proximityDistance, proximitySide } = computeState(lowerBinId, upperBinId, activeId);
 
-  const stored = getPosition(positionAddress);
+  const stored = getPosition(chatId, positionAddress);
 
   const baseAlert: Omit<PositionAlert, 'alertType'> = {
+    chatId,
     walletAddress,
     positionAddress,
     poolAddress: pool.address,
@@ -77,6 +83,9 @@ async function processPosition(
     totalXAmount,
     totalYAmount,
     strategyType,
+    activePrice: pool.activePricePerToken,
+    lowerPrice: lowerPricePerToken,
+    upperPrice: upperPricePerToken,
   };
 
   let oorAlertSent = stored?.oor_alert_sent ? 1 : 0;
@@ -106,6 +115,7 @@ async function processPosition(
   }
 
   upsertPosition({
+    chat_id: chatId,
     wallet_address: walletAddress,
     position_address: positionAddress,
     pool_address: pool.address,
@@ -126,6 +136,9 @@ async function processPosition(
     total_x_amount: totalXAmount,
     total_y_amount: totalYAmount,
     strategy_type: strategyType,
+    active_price: pool.activePricePerToken,
+    lower_price: lowerPricePerToken,
+    upper_price: upperPricePerToken,
     updated_at: Date.now(),
   });
 }
@@ -134,9 +147,9 @@ async function processPosition(
 
 async function processWallet(
   bot: Telegraf<Context>,
+  chatId: string,
   walletAddress: string,
-  threshold: number,
-  chatId: string
+  threshold: number
 ): Promise<void> {
   let positions: PortfolioPosition[];
 
@@ -150,20 +163,19 @@ async function processWallet(
     return;
   }
 
-  const knownAddresses = getKnownPositionAddresses(walletAddress);
+  const knownAddresses = getKnownPositionAddresses(chatId, walletAddress);
   const seenAddresses = new Set<string>();
 
   for (const pos of positions) {
     seenAddresses.add(pos.positionAddress);
-    await processPosition(bot, walletAddress, pos, threshold, chatId);
+    await processPosition(bot, chatId, walletAddress, pos, threshold);
     await delay(100);
   }
 
-  // Delete positions that are no longer returned by the API
   for (const addr of knownAddresses) {
     if (!seenAddresses.has(addr)) {
-      deletePosition(addr);
-      console.log(`[monitor] Removed closed position: ${addr}`);
+      deletePosition(chatId, addr);
+      console.log(`[monitor] Removed closed position for user ${chatId}: ${addr}`);
     }
   }
 }
@@ -171,23 +183,17 @@ async function processWallet(
 // ─── Main Poll Cycle ──────────────────────────────────────────────────────────
 
 export async function runPollingCycle(bot: Telegraf<Context>): Promise<void> {
-  const chatId = getChatId();
-  if (!chatId) {
-    console.log('[monitor] No chat_id configured. Send /start to the bot first.');
-    return;
-  }
-
-  const wallets = listWallets();
-  if (wallets.length === 0) {
+  const allWallets = getAllTrackedWallets();
+  if (allWallets.length === 0) {
     return;
   }
 
   const threshold = getProximityThreshold();
-  console.log(`[monitor] Polling ${wallets.length} wallet(s) at ${new Date().toISOString()}`);
+  console.log(`[monitor] Polling ${allWallets.length} wallet(s) at ${new Date().toISOString()}`);
 
-  for (const wallet of wallets) {
+  for (const wallet of allWallets) {
     try {
-      await processWallet(bot, wallet.address, threshold, chatId);
+      await processWallet(bot, wallet.chat_id, wallet.address, threshold);
     } catch (err) {
       if (err instanceof RateLimitError) {
         console.warn('[monitor] Rate limited. Aborting poll cycle.');
