@@ -78,63 +78,38 @@ interface DatapiPortfolioResponse {
 function inferStrategyType(
   positionBinData: Array<{ positionLiquidity: string; binId: number }>
 ): string {
-  if (!positionBinData || positionBinData.length === 0) return 'Unknown';
-  if (positionBinData.length === 1) return 'Spot';
-  if (positionBinData.length <= 2) return 'Spot';
+  if (!positionBinData || positionBinData.length <= 2) return 'Spot';
 
   const liquidities = positionBinData.map(b => parseFloat(b.positionLiquidity || '0'));
   const total = liquidities.reduce((a, b) => a + b, 0);
   if (total === 0) return 'Unknown';
 
   const n = liquidities.length;
-  const normalized = liquidities.map(l => l / total);
-
-  // Coefficient of Variation — how "uneven" the distribution is
-  const mean = 1 / n; // normalized mean is always 1/n
-  const variance = normalized.reduce((acc, v) => acc + (v - mean) ** 2, 0) / n;
-  const cv = Math.sqrt(variance) / mean;
-
-  // If very uniform (CV < 0.15), it's Spot
-  if (cv < 0.15) return 'Spot';
-
-  // Compare edge weight vs center weight to distinguish Curve from BidAsk
-  // Take outer 25% bins as "edges" and inner 50% as "center"
+  
+  // Divide bins into 3 areas: Left (25%), Center (50%), Right (25%)
   const edgeCount = Math.max(1, Math.floor(n * 0.25));
-  const edgeSum =
-    normalized.slice(0, edgeCount).reduce((a, b) => a + b, 0) +
-    normalized.slice(n - edgeCount).reduce((a, b) => a + b, 0);
-  const centerStart = Math.floor(n * 0.25);
-  const centerEnd = Math.ceil(n * 0.75);
-  const centerSlice = normalized.slice(centerStart, centerEnd);
-  const centerSum = centerSlice.reduce((a, b) => a + b, 0);
+  const centerStart = edgeCount;
+  const centerEnd = n - edgeCount;
 
-  // Ratio: how much heavier is center vs edges?
-  // Curve: center >> edges → centerWeight high
-  // BidAsk: edges >> center → edgeWeight high
-  const totalEdgeBins = edgeCount * 2;
-  const totalCenterBins = centerEnd - centerStart;
-  const edgeAvg = edgeSum / totalEdgeBins;
-  const centerAvg = centerSum / totalCenterBins;
+  const leftSum = liquidities.slice(0, centerStart).reduce((a, b) => a + b, 0);
+  const centerSum = liquidities.slice(centerStart, centerEnd).reduce((a, b) => a + b, 0);
+  const rightSum = liquidities.slice(centerEnd).reduce((a, b) => a + b, 0);
 
-  if (centerAvg > edgeAvg * 1.3) {
+  const leftAvg = leftSum / centerStart;
+  const centerAvg = centerSum / (centerEnd - centerStart);
+  const rightAvg = rightSum / edgeCount;
+
+  // Curve: Bell shape -> Center is significantly taller than BOTH edges
+  if (centerAvg > leftAvg * 1.15 && centerAvg > rightAvg * 1.15) {
     return 'Curve';
-  } else if (edgeAvg > centerAvg * 1.3) {
+  }
+
+  // BidAsk: U-shape -> BOTH edges are significantly taller than Center
+  if (leftAvg > centerAvg * 1.15 && rightAvg > centerAvg * 1.15) {
     return 'BidAsk';
   }
 
-  // If distribution is uneven but doesn't clearly match either pattern,
-  // check if one side dominates (another BidAsk indicator)
-  const midpoint = Math.floor(n / 2);
-  const leftSum = normalized.slice(0, midpoint).reduce((a, b) => a + b, 0);
-  const rightSum = normalized.slice(midpoint).reduce((a, b) => a + b, 0);
-  const sideRatio = Math.min(leftSum, rightSum) / Math.max(leftSum, rightSum);
-
-  // Strong one-sided concentration suggests BidAsk
-  if (sideRatio < 0.35 && cv > 0.3) return 'BidAsk';
-
-  // Moderate unevenness that's still somewhat symmetric → Curve
-  if (cv > 0.2) return 'Curve';
-
+  // Spot: Flat or Monotonic Slopes (\ or /)
   return 'Spot';
 }
 
