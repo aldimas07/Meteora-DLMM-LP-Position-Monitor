@@ -233,7 +233,7 @@ export function registerCommands(bot: Telegraf<Context>): void {
         const pnlLine = !isNaN(pnlPct) ? `📈 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlSol >= 0 ? '+' : ''}${fmtNum(pnlSol, 4)} SOL)` : '';
 
         cards.push([
-          `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(strategy)} ${strategy}`,
+          `<b>${escapeHtml(pos.pool_name)}</b>`,
           statusLine,
           `💲 Harga: <b>${activeP}</b> ${unit}`,
           `📏 Range: ${lowP} → ${highP}`,
@@ -270,7 +270,7 @@ export function registerCommands(bot: Telegraf<Context>): void {
       const feeEmoji = hasFees ? '💰' : '➖';
 
       cards.push([
-        `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(pos.strategy_type || 'Unknown')} ${pos.strategy_type || 'Unknown'}`,
+        `<b>${escapeHtml(pos.pool_name)}</b>`,
         `${feeEmoji} ${fmtNum(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
         `🔗 <a href="${getPositionUrl(pos.position_address)}">${shortAddr(pos.position_address)}</a>`,
       ].join('\n'));

@@ -66,7 +66,7 @@ export function formatOOR(alert: PositionAlert): string {
   return [
     `🔴 <b>OUT OF RANGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
     `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
     `💲 Harga: <b>${currentPrice(alert)}</b>`,
@@ -90,7 +90,7 @@ export function formatApproaching(alert: PositionAlert): string {
   return [
     `⚠️ <b>APPROACHING RANGE EDGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
     `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
     `💲 Harga: <b>${currentPrice(alert)}</b>`,
@@ -107,7 +107,7 @@ export function formatBackInRange(alert: PositionAlert): string {
   return [
     `✅ <b>BACK IN RANGE</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
     `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
     `💲 Harga: <b>${currentPrice(alert)}</b> — kembali ke range!`,
@@ -131,7 +131,7 @@ export function formatNewPosition(alert: PositionAlert): string {
   return [
     `🆕 <b>NEW POSITION DETECTED</b>`,
     `━━━━━━━━━━━━━━━━━━`,
-    `🏊 <b>${escapeHtml(alert.poolName)}</b>  ${strategyEmoji(alert.strategyType)} ${alert.strategyType}`,
+    `🏊 <b>${escapeHtml(alert.poolName)}</b>`,
     `📍 <code>${escapeHtml(shortAddr(alert.positionAddress))}</code>`,
     ``,
     `💲 Harga: <b>${currentPrice(alert)}</b>`,
