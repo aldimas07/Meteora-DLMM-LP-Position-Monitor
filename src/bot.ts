@@ -228,11 +228,16 @@ export function registerCommands(bot: Telegraf<Context>): void {
         const lowP = formatPriceStr(pos.lower_price || '0');
         const highP = formatPriceStr(pos.upper_price || '0');
 
+        const pnlPct = parseFloat(pos.pnl_pct || '0');
+        const pnlSol = parseFloat(pos.pnl_sol || '0');
+        const pnlLine = !isNaN(pnlPct) ? `📈 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlSol >= 0 ? '+' : ''}${fmtNum(pnlSol, 4)} SOL)` : '';
+
         cards.push([
           `<b>${escapeHtml(pos.pool_name)}</b>  ${strategyEmoji(strategy)} ${strategy}`,
           statusLine,
           `💲 Harga: <b>${activeP}</b> ${unit}`,
           `📏 Range: ${lowP} → ${highP}`,
+          pnlLine,
           `💎 ${fmtNum(pos.total_x_amount)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.total_y_amount)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
           `💰 Fees: ${fmtNum(pos.unclaimed_fee_x)} <b>${escapeHtml(pos.token_x_symbol)}</b> + ${fmtNum(pos.unclaimed_fee_y)} <b>${escapeHtml(pos.token_y_symbol)}</b>`,
           `🔗 <a href="${getPositionUrl(pos.position_address)}">${shortAddr(pos.position_address)}</a>`,

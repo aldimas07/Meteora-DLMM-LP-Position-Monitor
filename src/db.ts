@@ -60,6 +60,8 @@ function createTables(): void {
       active_price            TEXT    NOT NULL DEFAULT '0',
       lower_price             TEXT    NOT NULL DEFAULT '0',
       upper_price             TEXT    NOT NULL DEFAULT '0',
+      pnl_pct                 TEXT    NOT NULL DEFAULT '0',
+      pnl_sol                 TEXT    NOT NULL DEFAULT '0',
       updated_at              INTEGER NOT NULL,
       UNIQUE(chat_id, position_address)
     );
@@ -103,6 +105,8 @@ function migrateSchema(): void {
     ['active_price', "TEXT NOT NULL DEFAULT '0'"],
     ['lower_price', "TEXT NOT NULL DEFAULT '0'"],
     ['upper_price', "TEXT NOT NULL DEFAULT '0'"],
+    ['pnl_pct', "TEXT NOT NULL DEFAULT '0'"],
+    ['pnl_sol', "TEXT NOT NULL DEFAULT '0'"],
   ];
 
   for (const [col, def] of migrations) {
@@ -176,14 +180,16 @@ export function upsertPosition(pos: Omit<PositionRow, 'id'>): void {
       lower_bin_id, upper_bin_id, last_known_active_bin, bin_step,
       is_in_range, oor_alert_sent, approaching_alert_sent,
       unclaimed_fee_x, unclaimed_fee_y, total_x_amount, total_y_amount,
-      strategy_type, active_price, lower_price, upper_price, updated_at
+      strategy_type, active_price, lower_price, upper_price,
+      pnl_pct, pnl_sol, updated_at
     ) VALUES (
       @chat_id, @wallet_address, @position_address, @pool_address, @pool_name,
       @token_x_symbol, @token_y_symbol, @token_x_decimals, @token_y_decimals,
       @lower_bin_id, @upper_bin_id, @last_known_active_bin, @bin_step,
       @is_in_range, @oor_alert_sent, @approaching_alert_sent,
       @unclaimed_fee_x, @unclaimed_fee_y, @total_x_amount, @total_y_amount,
-      @strategy_type, @active_price, @lower_price, @upper_price, @updated_at
+      @strategy_type, @active_price, @lower_price, @upper_price,
+      @pnl_pct, @pnl_sol, @updated_at
     )
     ON CONFLICT(chat_id, position_address) DO UPDATE SET
       pool_address            = excluded.pool_address,
@@ -207,6 +213,8 @@ export function upsertPosition(pos: Omit<PositionRow, 'id'>): void {
       active_price            = excluded.active_price,
       lower_price             = excluded.lower_price,
       upper_price             = excluded.upper_price,
+      pnl_pct                 = excluded.pnl_pct,
+      pnl_sol                 = excluded.pnl_sol,
       updated_at              = excluded.updated_at
   `).run(pos);
 }

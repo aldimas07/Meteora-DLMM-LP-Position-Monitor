@@ -16,6 +16,8 @@ export interface PortfolioPool {
   activeId: number;
   binStep: number;
   activePricePerToken: string;
+  pnlPct: string;
+  pnlSol: string;
   tokenX: PoolToken;
   tokenY: PoolToken;
 }
@@ -32,6 +34,8 @@ export interface PortfolioPosition {
   strategyType: string;
   lowerPricePerToken: string;
   upperPricePerToken: string;
+  pnlPct: string;
+  pnlSol: string;
   pool: PortfolioPool;
 }
 
@@ -78,6 +82,8 @@ export interface PositionRow {
   active_price: string;
   lower_price: string;
   upper_price: string;
+  pnl_pct: string;
+  pnl_sol: string;
   updated_at: number;
 }
 
@@ -121,5 +127,7 @@ export interface PositionAlert {
   activePrice: string;
   lowerPrice: string;
   upperPrice: string;
+  pnlPct: string;
+  pnlSol: string;
   alertType: AlertType;
 }

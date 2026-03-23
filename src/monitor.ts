@@ -54,6 +54,7 @@ async function processPosition(
     totalUnclaimedFeeX, totalUnclaimedFeeY,
     totalXAmount, totalYAmount, strategyType,
     lowerPricePerToken, upperPricePerToken,
+    pnlPct, pnlSol,
     pool,
   } = apiPos;
   const activeId = pool.activeId;
@@ -86,6 +87,8 @@ async function processPosition(
     activePrice: pool.activePricePerToken,
     lowerPrice: lowerPricePerToken,
     upperPrice: upperPricePerToken,
+    pnlPct,
+    pnlSol,
   };
 
   let oorAlertSent = stored?.oor_alert_sent ? 1 : 0;
@@ -139,6 +142,8 @@ async function processPosition(
     active_price: pool.activePricePerToken,
     lower_price: lowerPricePerToken,
     upper_price: upperPricePerToken,
+    pnl_pct: pnlPct,
+    pnl_sol: pnlSol,
     updated_at: Date.now(),
   });
 }

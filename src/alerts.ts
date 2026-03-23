@@ -49,6 +49,17 @@ function currentPrice(alert: PositionAlert): string {
   return `${formatPriceStr(alert.activePrice)} ${priceUnit(alert)}`;
 }
 
+/** Format PnL string (e.g., +0.14% (+0.002 sol)) */
+function pnlFormat(alert: PositionAlert): string {
+  const pctNum = parseFloat(alert.pnlPct);
+  const solNum = parseFloat(alert.pnlSol);
+  const signPct = pctNum >= 0 ? '+' : '';
+  const signSol = solNum >= 0 ? '+' : '';
+  
+  if (isNaN(pctNum) || isNaN(solNum)) return '';
+  return `📈 PnL: ${signPct}${pctNum.toFixed(2)}% (${signSol}${fmtNum(solNum, 4)} SOL)`;
+}
+
 // ─── Message Formatters ───────────────────────────────────────────────────────
 
 export function formatOOR(alert: PositionAlert): string {
@@ -61,6 +72,8 @@ export function formatOOR(alert: PositionAlert): string {
     `💲 Harga: <b>${currentPrice(alert)}</b>`,
     `📏 Range: ${priceRange(alert)}`,
     `🧭 ${directionText(alert.activeId, alert.upperBinId)}`,
+    ``,
+    pnlFormat(alert),
     ``,
     `💎 Deposit:`,
     `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
@@ -84,6 +97,8 @@ export function formatApproaching(alert: PositionAlert): string {
     `📏 Range: ${priceRange(alert)}`,
     `📐 Jarak: <b>${alert.proximityDistance} bins</b> dari ${side}`,
     ``,
+    pnlFormat(alert),
+    ``,
     `🔗 <a href="${getPositionUrl(alert.positionAddress)}">Buka di Meteora ↗</a>`,
   ].join('\n');
 }
@@ -97,6 +112,8 @@ export function formatBackInRange(alert: PositionAlert): string {
     ``,
     `💲 Harga: <b>${currentPrice(alert)}</b> — kembali ke range!`,
     `📏 Range: ${priceRange(alert)}`,
+    ``,
+    pnlFormat(alert),
     ``,
     `💎 Deposit:`,
     `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,
@@ -120,6 +137,8 @@ export function formatNewPosition(alert: PositionAlert): string {
     `💲 Harga: <b>${currentPrice(alert)}</b>`,
     `📏 Range: ${priceRange(alert)}`,
     `${statusEmoji} Status: <b>${statusText}</b>`,
+    ``,
+    pnlFormat(alert),
     ``,
     `💎 Deposit:`,
     `   ${fmtNum(alert.totalXAmount)} <b>${escapeHtml(alert.tokenXSymbol)}</b> + ${fmtNum(alert.totalYAmount)} <b>${escapeHtml(alert.tokenYSymbol)}</b>`,

@@ -55,6 +55,8 @@ interface DatapiPool {
   tokenXMint: string;
   tokenYMint: string;
   binStep: number;
+  pnlPctChange?: string | number;
+  pnlSol?: string | number;
 }
 
 interface DatapiPortfolioResponse {
@@ -258,6 +260,8 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
           strategyType,
           lowerPricePerToken,
           upperPricePerToken,
+          pnlPct: p.pnlPctChange !== undefined ? String(p.pnlPctChange) : '0',
+          pnlSol: p.pnlSol !== undefined ? String(p.pnlSol) : '0',
           pool: {
             address: p.poolAddress,
             name: `${p.tokenX}-${p.tokenY}`,
@@ -266,6 +270,8 @@ export async function fetchPortfolio(walletAddress: string): Promise<PortfolioPo
             activePricePerToken,
             tokenX: { address: p.tokenXMint, symbol: p.tokenX, decimals: decimalsX },
             tokenY: { address: p.tokenYMint, symbol: p.tokenY, decimals: decimalsY },
+            pnlPct: p.pnlPctChange !== undefined ? String(p.pnlPctChange) : '0',
+            pnlSol: p.pnlSol !== undefined ? String(p.pnlSol) : '0',
           },
         });
       }
